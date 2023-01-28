@@ -124,7 +124,7 @@ class BaseProvider:
 
     async def _exec_sudo_command(self, command: str):
         machine: Machine = self.server.lookup_component("machine")
-        return await machine.exec_sudo_command(command)
+        return await machine.exec_sudo_command(command, timeout=5)
 
     async def enable_ssh(self, enabled) -> None:
         await self._exec_sudo_command(f"/usr/local/bin/set-ssh-access {enabled}")
