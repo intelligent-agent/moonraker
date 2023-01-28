@@ -37,7 +37,6 @@ if TYPE_CHECKING:
 class Recore:
     def __init__(self, config: ConfigHelper) -> None:
         self.server = config.get_server()
-        self.inside_container = False
 
         pclass = BaseProvider
         self.sys_provider: BaseProvider = pclass(config)
@@ -64,15 +63,6 @@ class Recore:
             is_ssh_enabled_bin)
         self.init_evt = asyncio.Event()
 
-    def get_system_provider(self):
-        return self.sys_provider
-
-    def is_inside_container(self):
-        return self.inside_container
-
-    def get_provider_type(self):
-        return self.provider_type
-
     async def wait_for_init(
         self, timeout: Optional[float] = None
     ) -> None:
@@ -82,23 +72,16 @@ class Recore:
             pass
 
     async def component_init(self) -> None:
-        await self.sys_provider.initialize()
         self.init_evt.set()
 
     async def _handle_machine_request(self, web_request: WebRequest) -> str:
         ep = web_request.get_endpoint()
-        if self.inside_container:
-            virt_id = self.system_info['virtualization'].get(
-                'virt_identifier', "none")
-            raise self.server.error(
-                f"Cannot {ep.split('/')[-1]} from within a "
-                f"{virt_id} container")
         if ep == "/recore/enable_ssh":
-            logging.info("/recore/enable_ssh")
-            await self.sys_provider.enable_ssh("true")
+            value = web_request.get("value")
+            await self.sys_provider.enable_ssh(value)
         elif ep == "/recore/set_boot_media":
-            logging.info("/recore/set_boot_media")
-            await self.sys_provider.set_boot_media("usb")
+            value = web_request.get("value")
+            await self.sys_provider.set_boot_media(value)
         else:
             raise self.server.error("Unsupported machine request")
         return "ok"
@@ -114,70 +97,12 @@ class Recore:
         }
         return {"recore_state": recore_state}
 
-    @property
-    def sudo_password(self) -> Optional[str]:
-        return self._sudo_password
-
-    @sudo_password.setter
-    def sudo_password(self, pwd: Optional[str]) -> None:
-        self._sudo_password = pwd
-
-    @property
-    def sudo_requested(self) -> bool:
-        return len(self.sudo_requests) > 0
-
-    @property
-    def linux_user(self) -> str:
-        return getpass.getuser()
-
-    @property
-    def sudo_request_messages(self) -> List[str]:
-        return [req[1] for req in self.sudo_requests]
-
-    def register_sudo_request(
-        self, callback: SudoCallback, message: str
-    ) -> None:
-        self.sudo_requests.append((callback, message))
-        self.server.send_event(
-            "machine:sudo_alert",
-            {
-                "sudo_requested": True,
-                "request_messages": self.sudo_request_messages
-            }
-        )
-
-    async def check_sudo_access(self, cmds: List[str] = []) -> bool:
-        if not cmds:
-            cmds = ["systemctl --version", "ls /root"]
-        shell_cmd: SCMDComp = self.server.lookup_component("shell_command")
-        for cmd in cmds:
-            try:
-                await self.exec_sudo_command(cmd, timeout=10.)
-            except shell_cmd.error:
-                return False
-        return True
-
-    async def exec_sudo_command(
-        self, command: str, tries: int = 1, timeout=2.
-    ) -> str:
-        proc_input = None
-        full_cmd = f"sudo {command}"
-        if self._sudo_password is not None:
-            proc_input = self._sudo_password
-            full_cmd = f"sudo -S {command}"
-        shell_cmd: SCMDComp = self.server.lookup_component("shell_command")
-        return await shell_cmd.exec_cmd(
-            full_cmd, proc_input=proc_input, log_complete=False, retries=tries,
-            timeout=timeout
-        )
-
     async def _get_boot_media(self) -> str:
         shell_cmd: SCMDComp = self.server.lookup_component('shell_command')
         try:
             resp = await self.get_boot_media_cmd.run_with_response(log_complete=False)
         except shell_cmd.error:
-            logging.info("Failed to run 'get-boot-media' command")
-            return "Failed"
+            return "Error: setting boot media failed"
         if resp:
             return resp.strip()
         return "unknown"
@@ -187,8 +112,7 @@ class Recore:
         try:
             resp = await self.is_ssh_enabled_cmd.run_with_response(log_complete=False)
         except shell_cmd.error:
-            logging.info("Failed to run 'get-ssh-enabled' command")
-            return "Failed"
+            return "Error: setting SSH access failed"
         if resp:
             return resp.strip()
         return "unknown"
@@ -197,18 +121,6 @@ class Recore:
 class BaseProvider:
     def __init__(self, config: ConfigHelper) -> None:
         self.server = config.get_server()
-        self.available_services: Dict[str, Dict[str, str]] = {}
-        self.shell_cmd: SCMDComp = self.server.load_component(
-            config, 'shell_command')
-
-    async def initialize(self) -> None:
-        pass
-
-    async def check_virt_status(self) -> Dict[str, Any]:
-        return {
-            'virt_type': "unknown",
-            'virt_identifier': "unknown"
-        }
 
     async def _exec_sudo_command(self, command: str):
         machine: Machine = self.server.lookup_component("machine")
@@ -216,11 +128,9 @@ class BaseProvider:
 
     async def enable_ssh(self, enabled) -> None:
         await self._exec_sudo_command(f"/usr/local/bin/set-ssh-access {enabled}")
-        logging.info("Enable ssh OK")
 
     async def set_boot_media(self, media) -> None:
         await self._exec_sudo_command(f"/usr/local/bin/set-boot-media {media}")
-        logging.info("Set boot media OK")
 
 def load_component(config: ConfigHelper) -> Recore:
     return Recore(config)
