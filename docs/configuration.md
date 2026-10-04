@@ -3353,7 +3353,7 @@ The following configuration options are available for all sensor types:
 
 [sensor my_sensor]
 type:
-#   The type of device.  Supported types: mqtt
+#   The type of device.  Supported types: mqtt, klipper
 #   This parameter must be provided.
 name:
 #   The friendly display name of the sensor.
@@ -3466,6 +3466,34 @@ history_field_total_energy:
 ```
 ///
 
+
+#### Klipper Sensor Configuration
+
+Reads a numeric field from a Klipper status object. No MQTT broker is needed.
+Measurements use the existing sensor API, sample store and optional job-history
+trackers. The subscription is renewed when Klipper reconnects. Values are
+unavailable while Klipper is disconnected or the configured field is invalid.
+
+```ini
+[sensor voltage]
+type: klipper
+name: Board voltage
+object: temperature_sensor _voltage
+# Required Klipper status object name.
+field: temperature
+# Numeric status field; defaults to temperature.
+parameter: voltage
+# Measurement name exposed to clients; defaults to the sensor section name.
+parameter_voltage:
+  units=V
+```
+
+Unit metadata labels the measurement; it does not convert its value. In this
+example Klipper already converts the ADC measurement to volts. Klipper sensor
+names beginning with an underscore can be hidden by frontends from temperature
+panels; check frontend support before renaming existing sensors and update any
+references to those names. Keep safety limits and alarms configured in Klipper:
+this component only presents measurements, it does not enforce safety limits.
 
 #### MQTT Sensor Configuration
 

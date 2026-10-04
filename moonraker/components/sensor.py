@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from collections import defaultdict, deque
 from functools import partial
 from ..common import RequestType, HistoryFieldData
@@ -215,8 +216,68 @@ class MQTTSensor(BaseSensor):
             return False
 
 
+class KlipperSensor(BaseSensor):
+    def __init__(self, config: ConfigHelper) -> None:
+        super().__init__(config)
+        self.object = config.get("object")
+        self.field = config.get("field", "temperature")
+        self.parameter = config.get("parameter", self.id)
+        self._subscribed = False
+        self.error_state = "Klipper not ready"
+        self.server.register_event_handler(
+            "server:klippy_ready", self._on_klippy_ready
+        )
+        self.server.register_event_handler(
+            "server:klippy_disconnect", self._on_klippy_disconnect
+        )
+
+    async def _on_klippy_ready(self) -> None:
+        kapis = self.server.lookup_component("klippy_apis")
+        callback = None if self._subscribed else self._on_status
+        status = await kapis.subscribe_objects(
+            {self.object: [self.field]}, callback, default=None
+        )
+        if status is None:
+            self.error_state = "Unable to subscribe to Klipper sensor"
+            self.last_measurements = {}
+            return
+        self._subscribed = True
+        if self.object not in status:
+            self.error_state = f"Klipper object '{self.object}' unavailable"
+            self.last_measurements = {}
+            return
+        self._on_status(status, 0.)
+
+    def _on_klippy_disconnect(self) -> None:
+        # KlippyAPI clears callbacks as well as subscriptions on disconnect.
+        self._subscribed = False
+        self.error_state = "Klipper disconnected"
+        self.last_measurements = {}
+
+    def _on_status(self, status: Dict[str, Any], eventtime: float) -> None:
+        if self.object not in status:
+            return  # Status notifications may contain only changed objects.
+        fields = status[self.object]
+        if isinstance(fields, dict) and self.field not in fields:
+            return  # Other fields of the same object may have changed.
+        value = fields.get(self.field) if isinstance(fields, dict) else None
+        if (
+            isinstance(value, bool) or not isinstance(value, (int, float)) or
+            not math.isfinite(value)
+        ):
+            self.error_state = f"Klipper field '{self.object}.{self.field}' is not numeric"
+            self.last_measurements = {}
+            return
+        self.error_state = None
+        self.last_measurements = {self.parameter: value}
+        for fdata in self.field_info.get(self.parameter, []):
+            fdata.tracker.update(value)
+
+
 class Sensors:
-    __sensor_types: Dict[str, Type[BaseSensor]] = {"MQTT": MQTTSensor}
+    __sensor_types: Dict[str, Type[BaseSensor]] = {
+        "MQTT": MQTTSensor, "KLIPPER": KlipperSensor
+    }
 
     def __init__(self, config: ConfigHelper) -> None:
         self.server = config.get_server()
